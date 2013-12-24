@@ -30,6 +30,8 @@ import sys
 import getopt
 import csv
 import os
+import re
+import logging 
 
 help_message = '''
 csv2mysql generates valid MySQL CREATE TABLE and LOAD DATA INFILE statements
@@ -40,6 +42,25 @@ is 27 characters long, varchar(27) will be used; this might cause truncation
 if a new row is later added with a 28-character entry in that column.
 '''
 
+class Tristate(object):
+    def __init__(self, value=None):
+       if any(value is v for v in (True, False, None)):
+          self.value = value
+       else:
+           raise ValueError("Tristate value must be True, False, or None")
+
+    def __eq__(self, other):
+       return self.value is other
+    def __ne__(self, other):
+       return self.value is not other
+    def __nonzero__(self):   # Python 3: __bool__()
+       raise TypeError("Tristate value may not be used as implicit Boolean")
+
+    def __str__(self):
+        return str(self.value)
+    def __repr__(self):
+        return "Tristate(%s)" % self.value
+
 class Usage(Exception):
   def __init__(self, msg):
     self.msg = msg
@@ -49,6 +70,7 @@ class csv2mysql(object):
   
   def __init__(self, filename):
     super(csv2mysql, self).__init__()
+    logging.basicConfig(stream=sys.stderr, level=logging.DEBUG) 
     
     self.filename = filename
     tmp = filename.split('.')[0]
@@ -59,13 +81,17 @@ class csv2mysql(object):
     
     self.dialect = csv.Sniffer().sniff(self.csvfile.read(128))
     self.csvfile.seek(0)
-    
+    logging.debug(self.dialect.delimiter)
+
     self.csvreader = csv.reader(self.csvfile, self.dialect)
     self.headers = self.csvreader.next()
     self.headers = [header.split(':')[0] for header in self.headers]
-    self.types = dict([(header,'BIGINT') for header in self.headers])
+    self.headers = [re.sub(r'[^\d\w \-_]', "", header) for header in self.headers]
+    self.types = dict([(header,'VARCHAR(255)') for header in self.headers])
   
   def isFloat(self, x):
+    if x == '' or x == None:
+      return None
     try:
       f = float(x)
       f= True
@@ -75,24 +101,22 @@ class csv2mysql(object):
 
   def isInteger(self, x):
     if x == '' or x == None:
-      return True
+      return None
     try:
       foo = int(x)
       return True
     except:
       return False
-  
+    
   def generate(self):
     for row in self.csvreader:
       i = 0
       for header in self.headers:
         col = row[i]
-        if self.types[header] == 'BIGINT':
-          if self.isInteger(col) == False:
-            self.types[header] = 'DOUBLE'
-        if self.types[header] == 'DOUBLE':
-          if self.isFloat(col) == False:
-            self.types[header] = 'VARCHAR(255)'
+        if self.isInteger(col) :
+           self.types[header] = 'BIGINT'
+        elif self.isFloat(col) :
+            self.types[header] = 'DECIMAL'
         i += 1
   
   def buildCreateTable(self):
@@ -111,6 +135,7 @@ class csv2mysql(object):
     for row in self.csvreader:
       sql += "INSERT INTO `"+self.tablename+"` VALUES ("
       for col in row:
+        logging.debug(col)
         sql += "'"+col.replace('"', '\"').replace("'", "\\'")+"',"
       sql = sql[:-1]
       sql += ");\n"
